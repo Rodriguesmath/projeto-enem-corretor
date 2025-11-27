@@ -52,7 +52,7 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     container_name: celery_worker
-    command: celery -A tasks.celery_app worker --loglevel=info -P prefork -c 1
+    command: celery -A celery_app.celery_app worker --loglevel=info -P prefork -c 1
     volumes:
       - ./worker:/app
       - ./shared:/app/shared
