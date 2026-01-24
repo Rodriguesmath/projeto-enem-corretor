@@ -58,4 +58,4 @@ celerybeat-schedule
 celerybeat.pid
 
 # --- Pastas de Backup do Projeto ---
-backup_local/
+backup_local/test_frontend/

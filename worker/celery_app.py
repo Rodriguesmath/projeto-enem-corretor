@@ -1,13 +1,10 @@
-import os
 from celery import Celery
-from dotenv import load_dotenv
-
-load_dotenv()
+from shared.config import settings
 
 celery_app = Celery(
     "worker",
-    broker=os.getenv("CELERY_BROKER_URL"),
-    backend=os.getenv("CELERY_RESULT_BACKEND"),
+    broker=settings.CELERY_BROKER_URL,
+    backend=settings.CELERY_RESULT_BACKEND,
     include=['tasks'] 
 )
 

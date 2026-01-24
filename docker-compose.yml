@@ -1,4 +1,4 @@
-version: '3.8'
+
 
 services:
   db:
@@ -11,9 +11,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data/
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -22,18 +22,16 @@ services:
     image: redis:7
     container_name: redis_queue
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   api:
     build:
       context: .
       dockerfile: backend/Dockerfile
     container_name: fastapi_api
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-    dns: 
-      - 8.8.8.8
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
-      - ./backend:/app
+      - ./backend:/app/backend
       - ./shared:/app/shared
     ports:
       - "8000:8000"
@@ -41,6 +39,7 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - CELERY_BROKER_URL=${CELERY_BROKER_URL}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - SECRET_KEY=${SECRET_KEY}
     depends_on:
       db:
         condition: service_healthy
@@ -52,14 +51,18 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     container_name: celery_worker
-    command: celery -A celery_app.celery_app worker --loglevel=info -P prefork -c 1
+    command: celery -A celery_app.celery_app worker --loglevel=info
     volumes:
       - ./worker:/app
       - ./shared:/app/shared
     environment:
       - DATABASE_URL=${DATABASE_URL}
+      - SECRET_KEY=${SECRET_KEY}
       - CELERY_BROKER_URL=${CELERY_BROKER_URL}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - PERPLEXITY_API_KEY=${PPLX_API_KEY}
+      - LLM_PROVIDER=perplexity
+      - LLM_MODEL=sonar-pro
     depends_on:
       api:
         condition: service_started

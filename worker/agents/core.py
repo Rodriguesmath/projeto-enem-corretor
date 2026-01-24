@@ -1,94 +1,145 @@
 import asyncio
 import json
 import logging
+import os
+from google.api_core.exceptions import ResourceExhausted
 from typing import Dict, Any, List
 
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
-# Imports internos
 from .prompts import PROMPT_AGENTE_COMPETENCIA, COMPETENCIAS_INFO
 from shared.schemas import AvaliacaoCompetencia
+from shared.config import settings
 
-# Configuração de Logs
 logger = logging.getLogger(__name__)
 
-# Constantes de Configuração
-MODEL_NAME = "models/gemini-flash-latest"
+# Configuração Google Gemini / Perplexity
+# Pega do ambiente ou usa o Flash Latest como fallback
+LLM_PROVIDER = settings.LLM_PROVIDER.lower()
+MODEL_NAME = settings.LLM_MODEL
+
 TEMP_CORRETOR_PADRAO = 0.2
 TEMP_CORRETOR_RIGOROSO = 0.1
 
+# Personas
+PERSONAS = {
+    "Corretor 1": "Seu perfil é ANALÍTICO e GRAMÁTICO. Você é extremamente rigoroso com desvios da norma culta e estrutura sintática. Você penaliza severamente erros técnicos.",
+    "Corretor 2": "Seu perfil é HOLÍSTICO e ARGUMENTATIVO. Você valoriza a fluidez, a coesão e a força do projeto de texto. Você tolera pequenos erros gramaticais se a argumentação for brilhante.",
+    "Corretor Supervisor": "Seu perfil é EQUILIBRADO e JUSTO. Você busca o consenso entre a rigidez gramatical e a fluidez argumentativa. Você decide a nota final com base no equilíbrio.",
+}
 
 async def avaliar_competencia_individual(
-    llm: ChatGoogleGenerativeAI, 
+    llm: BaseChatModel, 
     texto_redacao: str, 
     tema: str, 
-    comp_info: Dict[str, Any]
+    comp_info: Dict[str, Any],
+    instrucoes_persona: str
 ) -> Dict[str, Any]:
     """
-    Agente Especialista: Avalia uma única competência do ENEM de forma isolada.
-    
-    Args:
-        llm: Instância do modelo de linguagem configurada.
-        texto_redacao: O texto da redação a ser corrigida.
-        tema: O tema da redação.
-        comp_info: Dicionário contendo metadados da competência (número, critérios).
-
-    Returns:
-        Dict: Dicionário contendo a nota e a justificativa da competência.
+    Avalia uma competência.
     """
-    try:
-        # Configura o parser para garantir que a saída obedeça ao schema Pydantic
-        parser = JsonOutputParser(pydantic_object=AvaliacaoCompetencia)
-        
-        # O uso de with_structured_output força o modelo a retornar JSON estrito
-        llm_estruturado = llm.with_structured_output(AvaliacaoCompetencia)
+    # Loop infinito de "Semáforo" para Rate Limit
+    while True:
+        try:
+            parser = JsonOutputParser(pydantic_object=AvaliacaoCompetencia)
+            
+            chain = PROMPT_AGENTE_COMPETENCIA | llm | parser
 
-        chain = PROMPT_AGENTE_COMPETENCIA | llm_estruturado
+            # Aumentei o timeout aqui também por segurança
+            resultado = await chain.ainvoke({
+                "instrucoes_persona": instrucoes_persona,
+                "competencia_numero": comp_info["numero"],
+                "criterios_competencia": comp_info["criterios"],
+                "criterios_negativos": comp_info.get("criterios_negativos", ""), 
+                "redacao": texto_redacao,
+                "tema": tema,
+                "format_instructions": parser.get_format_instructions(),
+            })
 
-        resultado = await chain.ainvoke({
-            "competencia_numero": comp_info["numero"],
-            "criterios_competencia": comp_info["criterios"],
-            "criterios_negativos": comp_info.get("criterios_negativos", ""), 
-            "redacao": texto_redacao,
-            "tema": tema,
-            "format_instructions": parser.get_format_instructions(),
-        })
+            return resultado
 
-        return resultado.dict()
+        except ResourceExhausted as e:
+            # Semáforo Vermelho 🔴
+            wait_time = 30.0 # Default
+            # Tenta pegar tempo sugerido pelo Google
+            if hasattr(e, 'retry_after'):
+                wait_time = float(e.retry_after)
+            
+            logger.warning(f"Rate Limit (429) no Gemini. Pausando por {wait_time}s antes de tentar de novo...")
+            await asyncio.sleep(wait_time)
+            continue # Tenta de novo (Semáforo Verde 🟢)
 
-    except Exception as e:
-        logger.error(f"Erro ao avaliar competência {comp_info.get('numero')}: {e}")
-        # Em caso de erro, retorna uma estrutura zerada para não quebrar o fluxo
-        return {
-            "competencia": comp_info.get("numero"),
-            "nota": 0,
-            "justificativa": f"Erro sistêmico ao avaliar esta competência: {str(e)}"
-        }
+        except Exception as e:
+            logger.error(f"Erro ao avaliar competência {comp_info.get('numero')}: {e}")
+            return {
+                "competencia": comp_info.get("numero"),
+                "nota": 0,
+                "justificativa": f"Erro sistêmico: {str(e)}"
+            }
 
 
 async def _gerar_feedback_geral(
-    llm: ChatGoogleGenerativeAI, 
+    llm: BaseChatModel, 
     avaliacoes: List[Dict[str, Any]]
 ) -> str:
+    while True:
+        try:
+            prompt_comentario = ChatPromptTemplate.from_template(
+                "Com base nestas avaliações, escreva um feedback geral curto e motivador para o aluno. "
+                "Texto corrido apenas. Avaliações: {avaliacoes}"
+            )
+            chain = prompt_comentario | llm
+            resultado = await chain.ainvoke({"avaliacoes": json.dumps(avaliacoes, ensure_ascii=False)})
+            return resultado.content
+            
+        except ResourceExhausted as e:
+            # Semáforo Vermelho 🔴
+            wait_time = 30.0
+            logger.warning(f"Rate Limit no Feedback. Pausando por {wait_time}s...")
+            await asyncio.sleep(wait_time)
+            continue
+
+        except Exception as e:
+            logger.error(f"Erro ao gerar feedback geral: {e}")
+            return "Erro ao gerar comentário final."
+
+
+def get_llm_client(temperature: float = 0.2, json_mode: bool = True) -> BaseChatModel:
     """
-    Função auxiliar para gerar um parágrafo de feedback consolidado.
+    Fábrica de LLMs: Retorna Gemini ou Perplexity conforme configuração.
     """
-    try:
-        prompt_comentario = ChatPromptTemplate.from_template(
-            "Com base nestas 5 avaliações de competências de uma redação, "
-            "escreva um parágrafo de comentário geral conciso, motivador e útil para o aluno. "
-            "Avaliações: {avaliacoes}"
-        )
-        chain = prompt_comentario | llm
+    if LLM_PROVIDER == "perplexity":
+        pplx_key = settings.PPLX_API_KEY
+        if not pplx_key:
+            logger.error("PERPLEXITY_API_KEY não configurada!")
         
-        # Serializa as avaliações para passar como contexto
-        resultado = await chain.ainvoke({"avaliacoes": json.dumps(avaliacoes, ensure_ascii=False)})
-        return resultado.content
-    except Exception as e:
-        logger.error(f"Erro ao gerar feedback geral: {e}")
-        return "Não foi possível gerar o comentário geral devido a um erro no processamento."
+        return ChatOpenAI(
+            model=MODEL_NAME, 
+            temperature=temperature,
+            openai_api_key=pplx_key,
+            base_url="https://api.perplexity.ai",
+            max_tokens=2048,
+            timeout=60.0,
+        )
+    
+    # Default: Gemini
+    api_key = settings.GOOGLE_API_KEY
+    kwargs = {}
+    if json_mode:
+        kwargs["response_mime_type"] = "application/json"
+
+    return ChatGoogleGenerativeAI(
+        model=MODEL_NAME,
+        temperature=temperature,
+        google_api_key=api_key,
+        max_output_tokens=2048,
+        timeout=60.0,
+        model_kwargs=kwargs
+    )
 
 
 async def executar_correcao_completa_async(
@@ -97,45 +148,44 @@ async def executar_correcao_completa_async(
     tema: str
 ) -> Dict[str, Any]:
     """
-    Agente Orquestrador: Gerencia a correção completa da redação.
-    
-    Responsabilidades:
-    1. Instanciar o modelo com a temperatura adequada.
-    2. Paralelizar a avaliação das 5 competências.
-    3. Consolidar as notas e gerar feedback final.
+    Orquestrador SEQUENCIAL (Modelo Gemini).
     """
-    logger.info(f"[{id_corretor}] Iniciando orquestração de correção...")
+    persona_instrucao = PERSONAS.get(id_corretor, PERSONAS["Corretor Supervisor"])
+    logger.info(f"[{id_corretor}] Iniciando correção COM {LLM_PROVIDER.upper()} e persona: {persona_instrucao[:30]}...")
 
-    # Definição de temperatura baseada no perfil do corretor
-    # 'Corretor 1' tende a ser mais rigoroso/conservador (temperatura menor)
     temperatura = TEMP_CORRETOR_RIGOROSO if id_corretor == "Corretor 1" else TEMP_CORRETOR_PADRAO
+    
+    llm = get_llm_client(temperature=temperatura, json_mode=True)
 
-    llm = ChatGoogleGenerativeAI(
-        model=MODEL_NAME, 
-        temperature=temperatura
-    )
+    resultados_competencias = []
 
-    # Criação das tarefas assíncronas (uma para cada competência)
-    tasks = [
-        avaliar_competencia_individual(llm, texto_redacao, tema, info)
-        for info in COMPETENCIAS_INFO
-    ]
+    # --- LOOP SEQUENCIAL ---
+    for info in COMPETENCIAS_INFO:
+        logger.info(f"[{id_corretor}] Processando Competência {info['numero']}...")
+        res = await avaliar_competencia_individual(llm, texto_redacao, tema, info, persona_instrucao)
+        resultados_competencias.append(res)
 
-    # Execução paralela (Scatter-Gather)
-    resultados_competencias = await asyncio.gather(*tasks)
+    # Ordenação
+    resultados_competencias.sort(key=lambda x: x.get("competencia", 0))
 
-    # Ordenação por número da competência para garantir consistência visual (C1 a C5)
-    resultados_competencias.sort(key=lambda x: x["competencia"])
+    # Cálculo
+    nota_final_calculada = 0
+    competencias_validas = 0
+    for r in resultados_competencias:
+        if isinstance(r, dict) and isinstance(r.get("nota"), (int, float)):
+            nota_final_calculada += r["nota"]
+            if r.get("nota", 0) > 0:
+                competencias_validas += 1
 
-    # Cálculo da nota final
-    nota_final_calculada = sum(r["nota"] for r in resultados_competencias if isinstance(r.get("nota"), (int, float)))
+    # Feedback (Se tudo deu certo)
+    else:
+        logger.info(f"[{id_corretor}] Gerando feedback final...")
+        # Instância sem JSON forçado para o texto livre
+        llm_texto = get_llm_client(temperature=0.7, json_mode=False)
+        comentario_geral = await _gerar_feedback_geral(llm_texto, resultados_competencias)
 
-    # Geração do comentário geral (aproveita a instância do LLM já criada)
-    comentario_geral = await _gerar_feedback_geral(llm, resultados_competencias)
+    logger.info(f"[{id_corretor}] FIM. Nota: {nota_final_calculada}")
 
-    logger.info(f"[{id_corretor}] Correção finalizada. Nota: {nota_final_calculada}")
-
-    # Retorno estruturado
     return {
         "competencias": resultados_competencias,
         "nota_final": nota_final_calculada,
