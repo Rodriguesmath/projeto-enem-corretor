@@ -22,14 +22,15 @@ logger = logging.getLogger(__name__)
 LLM_PROVIDER = settings.LLM_PROVIDER.lower()
 MODEL_NAME = settings.LLM_MODEL
 
-TEMP_CORRETOR_PADRAO = 0.2
-TEMP_CORRETOR_RIGOROSO = 0.1
+# Temperaturas otimizadas para precisão uniforme em todas as faixas de nota
+TEMP_CORRETOR_PADRAO = 0.25  # Corretor 2 (rigoroso)
+TEMP_CORRETOR_RIGOROSO = 0.20  # Corretor 1 (muito rigoroso)
 
-# Personas
+# Personas calibradas: Justos e discernentes (alinhados com critérios oficiais ENEM)
 PERSONAS = {
-    "Corretor 1": "Seu perfil é ANALÍTICO e GRAMÁTICO. Você é extremamente rigoroso com desvios da norma culta e estrutura sintática. Você penaliza severamente erros técnicos.",
-    "Corretor 2": "Seu perfil é HOLÍSTICO e ARGUMENTATIVO. Você valoriza a fluidez, a coesão e a força do projeto de texto. Você tolera pequenos erros gramaticais se a argumentação for brilhante.",
-    "Corretor Supervisor": "Seu perfil é EQUILIBRADO e JUSTO. Você busca o consenso entre a rigidez gramatical e a fluidez argumentativa. Você decide a nota final com base no equilíbrio.",
+    "Corretor 1": "Seu perfil é TÉCNICO e CRITERIOSO. Você valoriza a correção gramatical e reconhece textos excelentes, mas é capaz de identificar pequenas falhas que impedem a nota máxima. Você segue os critérios oficiais do ENEM com fidelidade.",
+    "Corretor 2": "Seu perfil é CONTEXTUAL e EQUILIBRADO. Você valoriza profundidade argumentativa e coesão, mas diferencia textos excelentes (180-200) de textos perfeitos (200). Você é justo e reconhece qualidade sem ser permissivo.",
+    "Corretor Supervisor": "Seu perfil é EQUILIBRADO e FIEL aos critérios oficiais do ENEM. Você busca precisão, diferenciando textos muito bons (840-920) de textos perfeitos (960-1000).",
 }
 
 async def avaliar_competencia_individual(

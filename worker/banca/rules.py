@@ -1,6 +1,15 @@
 from typing import Dict, Any
 
 
+def arredondar_nota_enem(nota: float) -> int:
+    """
+    Arredonda a nota para os valores válidos do ENEM: 0, 40, 80, 120, 160, 200.
+    """
+    valores_validos = [0, 40, 80, 120, 160, 200]
+    # Encontra o valor mais próximo
+    return min(valores_validos, key=lambda x: abs(x - nota))
+
+
 def verificar_discrepancia(c1: Dict[str, Any], c2: Dict[str, Any]) -> bool:
     """Verifica se há discrepância total ou por competência."""
     if abs(c1["nota_final"] - c2["nota_final"]) > 100:
@@ -28,11 +37,12 @@ def calcular_nota_consolidada(c1: Dict[str, Any], c2: Dict[str, Any]) -> Dict[st
 
     for comp1, comp2 in zip(c1["competencias"], c2["competencias"]):
         nota_media_comp = (comp1["nota"] + comp2["nota"]) / 2
+        nota_arredondada = arredondar_nota_enem(nota_media_comp)
 
         correcao_final["competencias"].append(
             {
                 "competencia": comp1["competencia"],
-                "nota": nota_media_comp,
+                "nota": nota_arredondada,
                 "justificativa": f"[Média C{comp1['competencia']}] Corretor 1 ({comp1['nota']}): {comp1['justificativa']} | Corretor 2 ({comp2['nota']}): {comp2['justificativa']}",
             }
         )
@@ -75,12 +85,14 @@ def resolver_discrepancia_com_supervisor(
             nota_consenso = (s2 + s3) / 2
         else:
             nota_consenso = (s1 + s2) / 2
+        
+        nota_arredondada = arredondar_nota_enem(nota_consenso)
 
         correcao_final["competencias"].append(
             {
                 "competencia": i + 1,
-                "nota": nota_consenso,
-                "justificativa": f"[Consenso C{i+1}] Notas da banca: ({s1}, {s2}, {s3}). Nota final da competência: {nota_consenso}.",
+                "nota": nota_arredondada,
+                "justificativa": f"[Consenso C{i+1}] Notas da banca: ({s1}, {s2}, {s3}). Nota final da competência: {nota_arredondada}.",
             }
         )
 
